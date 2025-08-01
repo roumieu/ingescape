@@ -1375,14 +1375,17 @@ igs_io_t *model_write (igsagent_t *agent, const char *name,
 
 void model_LOCKED_handle_io_callbacks (igsagent_t *agent, igs_io_t *io){
     assert(agent);
-    if (!agent->uuid) //protection against concurrent agent destruction
-        return;
     assert(io);
-    if (!io->io_callbacks)
-        return;
-    if (!agent->uuid)
-        return;
     model_read_write_lock(__FUNCTION__, __LINE__);
+    if (!agent || !agent->uuid) { //protection against concurrent agent destruction
+        model_read_write_unlock(__FUNCTION__, __LINE__);
+        return;
+    }
+    if (!io->io_callbacks) {
+        model_read_write_unlock(__FUNCTION__, __LINE__);
+        return;
+    }
+    
     zlist_t *callbacks = zlist_dup(io->io_callbacks);
     igs_observe_io_wrapper_t *cb = zlist_first(callbacks);
     igs_io_type_t io_type = io->type;
@@ -1429,6 +1432,21 @@ void model_LOCKED_handle_io_callbacks (igsagent_t *agent, igs_io_t *io){
             default:
                 break;
         }
+        
+        if (agent->uuid)
+        {
+            // Make sure our agent was not destroyed while we were unlocked
+            igsagent_t * lookup_agent = zhashx_lookup(core_context->agents, agent->uuid);
+            if (!lookup_agent || !lookup_agent->uuid)
+                break;
+        }
+        else
+            break;
+        
+        if (!io->io_callbacks)
+            // Make sure the io was not destroyed while we were unlocked
+            break;
+        
         cb = zlist_next(callbacks);
     }
     free(name);

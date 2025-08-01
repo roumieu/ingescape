@@ -255,12 +255,16 @@ void s_handle_publication (zmsg_t **msg, igs_remote_agent_t *remote_agent)
         // targeted. We need to iterate through our agents and their mappings to check
         // which inputs need to be updated on which agent.
         igsagent_t *agent = zhashx_first(core_context->agents);
+        zlist_t *contacted_agents = zlist_new();
+        assert(contacted_agents);
         while (agent && agent->uuid && agent->mapping) {
             // try to find mapping elements matching with this subscriber's output
             // and update mapped input(s) value accordingly
             // TODO: optimize mapping storage to avoid iterating
             // check that this agent has not been destroyed when we were locked
             assert(agent->mapping->map_elements);
+            zlist_append(contacted_agents, agent);
+            
             igs_map_t *elmt = zlist_first(agent->mapping->map_elements);
             while (elmt && elmt->from_input && remote_agent->definition 
                    && remote_agent->definition->name && agent->uuid) {
@@ -287,13 +291,35 @@ void s_handle_publication (zmsg_t **msg, igs_remote_agent_t *remote_agent)
                             model_LOCKED_handle_io_callbacks(agent, io);
                             model_read_write_lock(__FUNCTION__, __LINE__);
                         }
+                        
                         if (agent->uuid)
-                            agent->rt_current_timestamp_microseconds = INT64_MIN;
+                        {
+                            // Make sure our agent was not destroyed while we were unlocked
+                            agent = zhashx_lookup(core_context->agents, agent->uuid);
+                            if (agent && agent->uuid)
+                                agent->rt_current_timestamp_microseconds = INT64_MIN;
+                            else
+                                break;
+                        }
+                        else
+                            break;
                     }
                 }
                 elmt = zlist_next(agent->mapping->map_elements);
             }
-            agent = zhashx_next(core_context->agents);
+            
+            zlistx_t *current_context_agents = zhashx_values(core_context->agents);
+            assert(current_context_agents);
+            igsagent_t *contacted_agent = zlist_first(contacted_agents);
+            while (contacted_agent)
+            {
+                igsagent_t *already_contacted_agent = zlistx_find(current_context_agents, contacted_agent);
+                if (already_contacted_agent)
+                    zlistx_delete(current_context_agents, zlistx_cursor(current_context_agents));
+                contacted_agent = zlist_next(contacted_agents);
+            }
+            
+            agent = zlistx_first(current_context_agents);
         }
         freen (output);
         if (value)

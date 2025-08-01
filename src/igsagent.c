@@ -24,9 +24,13 @@ void agent_LOCKED_propagate_agent_event (igs_agent_event_t event,
     if (!name)
         return;
     model_read_write_lock(__FUNCTION__, __LINE__);
+    zlist_t *contacted_agents = zlist_new();
+    assert(contacted_agents);
     zlistx_t *agents = zhashx_values(core_context->agents);
     igsagent_t *agent = zlistx_first(agents);
     while (agent && agent->uuid) {
+        zlist_append(contacted_agents, agent);
+
         if (!streq (uuid, agent->uuid)) {
             zlist_t *event_callbacks = zlist_dup(agent->agent_event_callbacks);
             igs_agent_event_wrapper_t *cb = zlist_first(event_callbacks);
@@ -35,12 +39,36 @@ void agent_LOCKED_propagate_agent_event (igs_agent_event_t event,
                 if (agent->uuid)
                     cb->callback_ptr (agent, event, uuid, name, event_data, cb->my_data);
                 model_read_write_lock(__FUNCTION__, __LINE__);
+                
+                if (agent->uuid)
+                {
+                    // Make sure our agent was not destroyed while we were unlocked
+                    agent = zhashx_lookup(core_context->agents, agent->uuid);
+                    if (!agent || !agent->uuid)
+                        break;
+                }
+                else
+                    break;
+                
                 cb = zlist_next(event_callbacks);
             }
             zlist_destroy(&event_callbacks);
         }
-        agent = zlistx_next(agents);
+        
+        zlistx_t *current_context_agents = zhashx_values(core_context->agents);
+        assert(current_context_agents);
+        igsagent_t *contacted_agent = zlist_first(contacted_agents);
+        while (contacted_agent)
+        {
+            igsagent_t *already_contacted_agent = zlistx_find(current_context_agents, contacted_agent);
+            if (already_contacted_agent)
+                zlistx_delete(current_context_agents, zlistx_cursor(current_context_agents));
+            contacted_agent = zlist_next(contacted_agents);
+        }
+        
+        agent = zlistx_first(current_context_agents);
     }
+    
     zlistx_destroy(&agents);
     model_read_write_unlock(__FUNCTION__, __LINE__);
 }
@@ -179,7 +207,9 @@ igs_result_t igsagent_activate (igsagent_t *agent)
     while (agent->uuid && remote && agent->uuid) {
         igs_agent_event_wrapper_t *cb = zlist_first(agent_event_callbacks);
         while (remote->uuid && cb && agent->uuid) {
+            
             model_read_write_unlock(__FUNCTION__, __LINE__);
+            // FIXME: here remote agent can be destroyed
             if (agent->uuid && remote->uuid)
                 cb->callback_ptr (agent, IGS_AGENT_ENTERED, remote->uuid,
                                   remote->definition->name, remote->definition->json, cb->my_data);
@@ -236,17 +266,16 @@ igs_result_t igsagent_deactivate (igsagent_t *agent)
         model_read_write_unlock(__FUNCTION__, __LINE__);
         return IGS_SUCCESS;
     }
+    s_lock_zyre_peer (__FUNCTION__, __LINE__);
     if (agent->context && agent->context->network_actor && agent->context->node) {
-        s_lock_zyre_peer (__FUNCTION__, __LINE__);
         zmsg_t *msg = zmsg_new ();
         zmsg_addstr (msg, REMOTE_AGENT_EXIT_MSG);
         zmsg_addstr (msg, agent->uuid);
         zmsg_addstr (msg, agent->definition->name);
         zyre_shout (agent->context->node, IGS_PRIVATE_CHANNEL, &msg);
         zyre_leave (agent->context->node, agent->igs_channel);
-        s_unlock_zyre_peer (__FUNCTION__, __LINE__);
     }
-
+    s_unlock_zyre_peer (__FUNCTION__, __LINE__);
     zhashx_delete(core_context->agents, agent->uuid);
     agent->context = NULL;
     char *uuid = strdup(agent->uuid);
