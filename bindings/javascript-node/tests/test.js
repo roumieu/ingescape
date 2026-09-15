@@ -10,8 +10,7 @@
     =========================================================================
 */
 
-const IGS = require(__dirname + "/../prebuilds/" + process.platform + "-" + process.arch + "/ingescape.node"); // igs js wrapper
-
+const IGS = require(__dirname + "/../index.js");
 
 const assert = require('assert');
 const commands = require('command-line-args');
